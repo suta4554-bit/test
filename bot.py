@@ -1,15 +1,9 @@
 import os
-import time
 import logging
-import aiohttp
-from pyrogram import Client, filters, errors
-from pyrogram.types import Message
-
-# --- Configuration ---
-BOT_TOKEN = "7714074717:AAEUdT9tXgRH1v2V1ffnYEPGUGCcehkR4oM"
-API_ID = 21845364
-API_HASH = "ae2387f39ee2ae207f378feaa19579b6"
-CHANNEL_USERNAME = "ahajajjaowij" 
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import requests
+import tempfile
 
 # Configure logging
 logging.basicConfig(
@@ -18,145 +12,98 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Use in_memory session to avoid file persistence issues on Render
-app = Client(
-    "my_bot_session",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    in_memory=True  # This fixes the Render restart issue
-)
+# Bot token
+BOT_TOKEN = "7714074717:AAEUdT9tXgRH1v2V1ffnYEPGUGCcehkR4oM"
 
-@app.on_message(filters.command("start"))
-async def start_command(client: Client, message: Message):
-    await message.reply_text(
-        f"Welcome! Send me a **direct download link** and I will upload it to @{CHANNEL_USERNAME}."
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a message when the command /start is issued."""
+    await update.message.reply_text(
+        "Welcome! Send me a URL and I'll download the file and send it back to you.\n\n"
+        "Example: https://example.com/file.pdf"
     )
 
-@app.on_message(filters.text & ~filters.command(["start"]))
-async def download_to_channel(client: Client, message: Message):
-    url = message.text.strip()
+async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Download file from URL and send it back to user."""
+    url = update.message.text.strip()
     
-    if not url.startswith(("http://", "https://")):
-        await message.reply_text("Please send a valid HTTP/HTTPS URL.")
+    # Check if the message contains a URL
+    if not url.startswith(('http://', 'https://')):
+        await update.message.reply_text("Please send a valid URL starting with http:// or https://")
         return
-
-    status_msg = await message.reply_text("Processing link...")
     
-    file_path = None
+    await update.message.reply_text("Downloading file... Please wait.")
+    
     try:
-        # 1. Download
+        # Send GET request to download the file
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': url
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
+        response = requests.get(url, headers=headers, stream=True, timeout=60)
+        response.raise_for_status()
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=600, allow_redirects=True) as response:
-                
-                logger.info(f"Status: {response.status}, Content-Type: {response.headers.get('Content-Type', 'Unknown')}")
-                
-                if response.status != 200:
-                    await status_msg.edit_text(
-                        f"❌ Error: Server returned status {response.status}\n\n"
-                        f"This might not be a direct download link."
-                    )
-                    return
-                
-                content_type = response.headers.get('Content-Type', '').lower()
-                if 'text/html' in content_type:
-                    await status_msg.edit_text(
-                        "❌ Error: This URL returns a webpage (HTML), not a file.\n\n"
-                        "Please send a **direct download link**."
-                    )
-                    return
-                
-                filename = "downloaded_file"
-                if "Content-Disposition" in response.headers:
-                    cd = response.headers["Content-Disposition"]
-                    if "filename=" in cd:
-                        filename = cd.split("filename=")[1].strip('"').strip("'")
-                
-                if filename == "downloaded_file" and url.split("/")[-1]:
-                    filename = url.split("/")[-1].split("?")[0]
-                
-                if "." not in filename and content_type:
-                    ext_map = {
-                        'video/mp4': '.mp4',
-                        'video/x-matroska': '.mkv',
-                        'application/pdf': '.pdf',
-                        'application/zip': '.zip',
-                        'image/jpeg': '.jpg',
-                        'image/png': '.png'
-                    }
-                    for ct, ext in ext_map.items():
-                        if ct in content_type:
-                            filename += ext
-                            break
-
-                await status_msg.edit_text(f"Downloading **{filename}**...")
-                
-                file_path = os.path.join("/tmp", filename)  # Use /tmp on Render
-                
-                downloaded_size = 0
-                with open(file_path, "wb") as f:
-                    async for chunk in response.content.iter_chunked(1024 * 1024): 
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
-
-                if downloaded_size < 1024:
-                    with open(file_path, 'r', errors='ignore') as f:
-                        content = f.read(500)
-                        if '<html' in content.lower():
-                            await status_msg.edit_text(
-                                "❌ Error: Downloaded file is an HTML page, not a file."
-                            )
-                            os.remove(file_path)
-                            return
-
-        # 2. Upload to Channel
-        await status_msg.edit_text(f"Download done. Uploading to @{CHANNEL_USERNAME}...")
-
-        async def progress(current, total):
-            now = time.time()
-            if hasattr(progress, 'last_time') and now - progress.last_time < 5:
-                return
-            progress.last_time = now
-            percent = (current / total) * 100
-            try:
-                await status_msg.edit_text(f"Uploading: {percent:.1f}%")
-            except:
-                pass
-        progress.last_time = 0
-
-        caption_text = f"Filename: {filename}\nSource: {url}\nUser: {message.from_user.mention}"
-
-        sent_msg = await client.send_document(
-            chat_id=CHANNEL_USERNAME, 
-            document=file_path,
-            caption=caption_text,
-            progress=progress
-        )
-
-        link = sent_msg.link if sent_msg.link else f"t.me/{CHANNEL_USERNAME}"
-        await status_msg.edit_text(f"✅ File uploaded!\nLink: {link}")
-
-    except aiohttp.ClientError as e:
-        await status_msg.edit_text(f"❌ Network error: {str(e)}")
-    except errors.UsernameNotOccupied:
-        await status_msg.edit_text(f"❌ Username @{CHANNEL_USERNAME} does not exist.")
-    except errors.UsernameInvalid:
-        await status_msg.edit_text(f"❌ Username @{CHANNEL_USERNAME} is invalid.")
+        # Get filename from URL or Content-Disposition header
+        filename = None
+        if 'Content-Disposition' in response.headers:
+            content_disposition = response.headers['Content-Disposition']
+            if 'filename=' in content_disposition:
+                filename = content_disposition.split('filename=')[1].strip('"')
+        
+        if not filename:
+            filename = url.split('/')[-1] or 'downloaded_file'
+        
+        # Create temporary file to save the downloaded content
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}") as tmp_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                tmp_file.write(chunk)
+            temp_path = tmp_file.name
+        
+        # Get file size
+        file_size = os.path.getsize(temp_path)
+        file_size_mb = file_size / (1024 * 1024)
+        
+        # Telegram bot API has a 50MB file size limit
+        if file_size_mb > 50:
+            await update.message.reply_text(
+                f"File is too large ({file_size_mb:.2f} MB). "
+                "Telegram bot API supports files up to 50 MB."
+            )
+            os.unlink(temp_path)
+            return
+        
+        # Send the file to user
+        await update.message.reply_text(f"Uploading {filename} ({file_size_mb:.2f} MB)...")
+        
+        with open(temp_path, 'rb') as file:
+            await update.message.reply_document(
+                document=file,
+                filename=filename,
+                caption=f"Downloaded from: {url}"
+            )
+        
+        # Clean up temporary file
+        os.unlink(temp_path)
+        
+    except requests.exceptions.Timeout:
+        await update.message.reply_text("Download timeout. The server took too long to respond.")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error downloading file: {e}")
+        await update.message.reply_text(f"Error downloading file: {str(e)}")
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await status_msg.edit_text(f"An error occurred: {str(e)}")
-    
-    finally:
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
+        logger.error(f"Unexpected error: {e}")
+        await update.message.reply_text(f"An error occurred: {str(e)}")
 
-if __name__ == "__main__":
-    logger.info(f"Bot started. Target channel: @{CHANNEL_USERNAME}")
-    app.run()
+def main():
+    """Start the bot."""
+    # Create the Application
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_and_send))
+
+    # Run the bot
+    logger.info("Bot started...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()
