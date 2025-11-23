@@ -18,18 +18,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Use in_memory session to avoid file persistence issues on Render
 app = Client(
     "my_bot_session",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    in_memory=True  # This fixes the Render restart issue
 )
 
 @app.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
     await message.reply_text(
-        f"Welcome! Send me a **direct download link** (must return a file), and I will upload it to @{CHANNEL_USERNAME}.\n\n"
-        "Note: Regular website links that require JavaScript or show download buttons will NOT work."
+        f"Welcome! Send me a **direct download link** and I will upload it to @{CHANNEL_USERNAME}."
     )
 
 @app.on_message(filters.text & ~filters.command(["start"]))
@@ -44,7 +45,7 @@ async def download_to_channel(client: Client, message: Message):
     
     file_path = None
     try:
-        # 1. Download with better headers and redirect handling
+        # 1. Download
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': '*/*',
@@ -55,38 +56,32 @@ async def download_to_channel(client: Client, message: Message):
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=600, allow_redirects=True) as response:
                 
-                # Log the response for debugging
-                logger.info(f"Status: {response.status}, URL: {response.url}, Content-Type: {response.headers.get('Content-Type', 'Unknown')}")
+                logger.info(f"Status: {response.status}, Content-Type: {response.headers.get('Content-Type', 'Unknown')}")
                 
                 if response.status != 200:
                     await status_msg.edit_text(
                         f"❌ Error: Server returned status {response.status}\n\n"
-                        f"This URL might not be a direct download link. "
-                        f"Make sure the link directly returns a file, not a webpage."
+                        f"This might not be a direct download link."
                     )
                     return
                 
-                # Check if content is actually a file (not HTML)
                 content_type = response.headers.get('Content-Type', '').lower()
                 if 'text/html' in content_type:
                     await status_msg.edit_text(
                         "❌ Error: This URL returns a webpage (HTML), not a file.\n\n"
-                        "Please send a **direct download link** that starts the download immediately."
+                        "Please send a **direct download link**."
                     )
                     return
                 
-                # Extract filename
                 filename = "downloaded_file"
                 if "Content-Disposition" in response.headers:
                     cd = response.headers["Content-Disposition"]
                     if "filename=" in cd:
                         filename = cd.split("filename=")[1].strip('"').strip("'")
                 
-                # Fallback to URL if no filename in headers
                 if filename == "downloaded_file" and url.split("/")[-1]:
-                    filename = url.split("/")[-1].split("?")[0]  # Remove query params
+                    filename = url.split("/")[-1].split("?")[0]
                 
-                # If still no extension, try to guess from Content-Type
                 if "." not in filename and content_type:
                     ext_map = {
                         'video/mp4': '.mp4',
@@ -103,7 +98,7 @@ async def download_to_channel(client: Client, message: Message):
 
                 await status_msg.edit_text(f"Downloading **{filename}**...")
                 
-                file_path = os.path.join(os.getcwd(), filename)
+                file_path = os.path.join("/tmp", filename)  # Use /tmp on Render
                 
                 downloaded_size = 0
                 with open(file_path, "wb") as f:
@@ -111,14 +106,12 @@ async def download_to_channel(client: Client, message: Message):
                         f.write(chunk)
                         downloaded_size += len(chunk)
 
-                # Check if file is suspiciously small (might be error page)
-                if downloaded_size < 1024:  # Less than 1KB
+                if downloaded_size < 1024:
                     with open(file_path, 'r', errors='ignore') as f:
                         content = f.read(500)
-                        if '<html' in content.lower() or '<body' in content.lower():
+                        if '<html' in content.lower():
                             await status_msg.edit_text(
-                                "❌ Error: The downloaded file appears to be an HTML error page.\n\n"
-                                "The link you provided is not a direct download link."
+                                "❌ Error: Downloaded file is an HTML page, not a file."
                             )
                             os.remove(file_path)
                             return
@@ -147,16 +140,15 @@ async def download_to_channel(client: Client, message: Message):
             progress=progress
         )
 
-        # 3. Confirmation
         link = sent_msg.link if sent_msg.link else f"t.me/{CHANNEL_USERNAME}"
-        await status_msg.edit_text(f"✅ File successfully uploaded!\nLink: {link}")
+        await status_msg.edit_text(f"✅ File uploaded!\nLink: {link}")
 
     except aiohttp.ClientError as e:
         await status_msg.edit_text(f"❌ Network error: {str(e)}")
     except errors.UsernameNotOccupied:
-        await status_msg.edit_text(f"❌ **Error**: The username @{CHANNEL_USERNAME} does not exist.")
+        await status_msg.edit_text(f"❌ Username @{CHANNEL_USERNAME} does not exist.")
     except errors.UsernameInvalid:
-        await status_msg.edit_text(f"❌ **Error**: The username @{CHANNEL_USERNAME} is invalid.")
+        await status_msg.edit_text(f"❌ Username @{CHANNEL_USERNAME} is invalid.")
     except Exception as e:
         logger.error(f"Error: {e}")
         await status_msg.edit_text(f"An error occurred: {str(e)}")
@@ -166,5 +158,5 @@ async def download_to_channel(client: Client, message: Message):
             os.remove(file_path)
 
 if __name__ == "__main__":
-    print(f"Bot started. Target channel: @{CHANNEL_USERNAME}")
+    logger.info(f"Bot started. Target channel: @{CHANNEL_USERNAME}")
     app.run()
