@@ -1,2 +1,2 @@
-Pyrogram==2.0.106
-aiohttp==3.9.3
+python-telegram-bot==21.7
+requests==2.32.3
