@@ -6,7 +6,7 @@ from pyrogram import Client, filters, errors
 from pyrogram.types import Message
 
 # --- Configuration ---
-BOT_TOKEN = "7714074717:AAEUdT9tXgRH1v2V1ffnYEPGUGCcehkR4oM"
+BOT_TOKEN = "7714074717:AAGe_hpofp64dPaWmILdbXiQ_523JzIkzx4"
 API_ID = 21845364
 API_HASH = "ae2387f39ee2ae207f378feaa19579b6"
 
@@ -110,3 +110,4 @@ async def download_to_channel(client: Client, message: Message):
 if __name__ == "__main__":
     print(f"Bot started. Target channel: @{CHANNEL_USERNAME}")
     app.run()
+
